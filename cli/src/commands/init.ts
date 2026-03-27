@@ -1,0 +1,244 @@
+import fs from 'fs';
+import path from 'path';
+import readline from 'readline';
+import chalk from 'chalk';
+
+interface BuildTranslatorConfig {
+  sourceLanguage: string;
+  targetLanguages: string[];
+  localesPath: string;
+  markdownPath?: string;
+  arbPath?: string;
+  arbPrefix?: string;
+  translateArbDescriptions?: boolean;
+  tone?: string;
+  phpVariables?: boolean;
+  glossary?: {
+    doNotTranslate?: string[];
+    preferredTranslations?: Record<string, string | Record<string, string>>;
+  };
+}
+
+export async function initCommand() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const question = (query: string): Promise<string> =>
+    new Promise((resolve) => rl.question(chalk.blueBright(query), resolve));
+
+  console.log(chalk.bold('\nWelcome to PolyCLI! Let\'s set up your translation config.\n'));
+
+  // ── Merge behavior: read existing config as defaults ──────────────────────
+  const configPath = path.resolve(process.cwd(), 'buildtranslator.json');
+  let existingConfig: Partial<BuildTranslatorConfig> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      existingConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      console.log(chalk.yellow('Existing config found — press Enter to keep current values.\n'));
+    } catch {
+      console.log(chalk.yellow('Could not read existing config — starting fresh.\n'));
+    }
+  }
+
+  // ── Core prompts ──────────────────────────────────────────────────────────
+  const defaultSource = existingConfig.sourceLanguage || 'it';
+  const sourceLangRaw = await question(`Source language [default: ${defaultSource}]: `);
+  const sourceLang = sourceLangRaw.trim() || defaultSource;
+
+  const defaultTargets = existingConfig.targetLanguages?.join(',') || 'en,es';
+  const targetLangsRaw = await question(`Target languages, comma-separated [default: ${defaultTargets}]: `);
+  const targetLangsStr = targetLangsRaw.trim() || defaultTargets;
+
+  const defaultLocales = existingConfig.localesPath || './locales';
+  const localesFolderRaw = await question(`JSON locales folder path [default: ${defaultLocales}]: `);
+  const localesFolder = localesFolderRaw.trim() || defaultLocales;
+
+  // ── Markdown support ──────────────────────────────────────────────────────
+  const defaultMarkdown = existingConfig.markdownPath;
+  const wantsMarkdown = await question(
+    `\nDo you want to translate Markdown files?${defaultMarkdown ? ` (current: ${defaultMarkdown})` : ''} (y/N): `
+  );
+
+  let markdownFolder: string | undefined = defaultMarkdown;
+  if (wantsMarkdown.trim().toLowerCase() === 'y') {
+    const mdPath = await question(
+      `Markdown files folder path [default: ${defaultMarkdown || './docs'}]\n` +
+      chalk.gray(
+        '  Expected structure: <path>/<sourceLanguage>/*.md\n' +
+        '  Output:            <path>/<targetLanguage>/*.md\n'
+      ) +
+      chalk.blueBright('  Path: ')
+    );
+    markdownFolder = mdPath.trim() || defaultMarkdown || './docs';
+  }
+
+  // ── ARB support ───────────────────────────────────────────────────────────
+  const defaultArbPath = existingConfig.arbPath;
+  const defaultArbPrefix = existingConfig.arbPrefix ?? 'app';
+  const defaultTranslateDescriptions = existingConfig.translateArbDescriptions ?? false;
+
+  const wantsArb = await question(
+    `\nDo you want to translate Flutter .arb files?${defaultArbPath ? ` (current: ${defaultArbPath})` : ''} (y/N): `
+  );
+
+  let arbFolder: string | undefined = defaultArbPath;
+  let arbPrefix: string | undefined = defaultArbPrefix;
+  let translateArbDescriptions: boolean = defaultTranslateDescriptions;
+
+  if (wantsArb.trim().toLowerCase() === 'y') {
+    const arbPathRaw = await question(
+      `ARB files folder path [default: ${defaultArbPath || './lib/l10n'}]\n` +
+      chalk.gray(
+        `  Expected file: <path>/${defaultArbPrefix}_<sourceLanguage>.arb\n` +
+        `  Output:        <path>/${defaultArbPrefix}_<targetLanguage>.arb\n`
+      ) +
+      chalk.blueBright('  Path: ')
+    );
+    arbFolder = arbPathRaw.trim() || defaultArbPath || './lib/l10n';
+
+    const arbPrefixRaw = await question(`ARB filename prefix [default: ${defaultArbPrefix}]: `);
+    arbPrefix = arbPrefixRaw.trim() || defaultArbPrefix;
+
+    const descRaw = await question(
+      `Translate @key descriptions? Costs extra credits — descriptions are developer notes, not user-facing. (y/N): `
+    );
+    translateArbDescriptions = descRaw.trim().toLowerCase() === 'y';
+  }
+
+  // ── PHP variables prompt ──────────────────────────────────────────────────
+  const defaultPhpVariables = existingConfig.phpVariables ?? false;
+  const phpVariablesHint = defaultPhpVariables ? '(Y/n)' : '(y/N)';
+  const phpVariablesRaw = await question(
+    `\nEnable PHP/Laravel :variable protection? Protects :name, :count, :attribute, etc. ${phpVariablesHint}: `
+  );
+  const phpVariablesInput = phpVariablesRaw.trim().toLowerCase();
+  const phpVariables = phpVariablesInput === ''
+    ? defaultPhpVariables
+    : phpVariablesInput === 'y';
+
+  // ── Tone prompt ───────────────────────────────────────────────────────────
+  let toneInput = '';
+  const defaultTone = existingConfig.tone || '';
+  while (true) {
+    const currentHint = defaultTone
+      ? `, current: "${defaultTone.length > 40 ? defaultTone.slice(0, 40) + '...' : defaultTone}"`
+      : '';
+    const raw = await question(
+      `\nTranslation tone/style (optional, max 200 chars${currentHint}, press Enter to skip): `
+    );
+    const typed = raw.trim();
+    // Only fall back to defaultTone if it is itself valid (≤ 200 chars)
+    const val = typed || (defaultTone.length <= 200 ? defaultTone : '');
+    if (val.length > 200) {
+      console.log(chalk.red(`  Tone is ${val.length} characters. Please keep it under 200.`));
+      continue;
+    }
+    toneInput = val;
+    break;
+  }
+
+  // ── doNotTranslate prompt ─────────────────────────────────────────────────
+  const defaultDNT = (existingConfig.glossary?.doNotTranslate || []).join(', ');
+  const dntRaw = await question(
+    `Terms to never translate, comma-separated (e.g. MyBrand,Init,Run — press Enter to skip)${defaultDNT ? `\n  [current: ${defaultDNT}]` : ''}: `
+  );
+  const doNotTranslate = (dntRaw.trim() || defaultDNT)
+    .split(',')
+    .map((t: string) => t.trim())
+    .filter(Boolean);
+
+  // ── preferredTranslations prompt ──────────────────────────────────────────
+  let preferredTranslations: Record<string, string | Record<string, string>> | undefined =
+    existingConfig.glossary?.preferredTranslations;
+
+  const defaultPT = preferredTranslations ? JSON.stringify(preferredTranslations) : '';
+  console.log(chalk.gray('\n  Preferred translations: JSON object, e.g. {"Early Bird":"use local idiom"}'));
+  let retries = 0;
+  while (retries < 3) {
+    const raw = await question(
+      `Preferred translations as JSON${defaultPT ? ' (Enter to keep current)' : ' (Enter to skip)'}: `
+    );
+    const val = raw.trim();
+    if (!val && defaultPT) break;   // keep existing
+    if (!val) break;                // skip
+    try {
+      preferredTranslations = JSON.parse(val);
+      break;
+    } catch {
+      retries++;
+      console.log(chalk.red(`  Invalid JSON. ${3 - retries} attempt(s) left.`));
+    }
+  }
+  if (retries === 3) {
+    console.log(chalk.yellow('  Skipping preferredTranslations after 3 failed attempts.'));
+  }
+
+  rl.close();
+
+  // ── Build config ──────────────────────────────────────────────────────────
+  const targetLangs = targetLangsStr
+    .split(',')
+    .map((l) => l.trim())
+    .filter((l) => l !== '');
+
+  const config: BuildTranslatorConfig = {
+    ...existingConfig,
+    sourceLanguage: sourceLang,
+    targetLanguages: targetLangs.length ? targetLangs : ['en', 'es'],
+    localesPath: localesFolder,
+  };
+
+  if (markdownFolder) {
+    config.markdownPath = markdownFolder;
+  }
+
+  if (arbFolder) {
+    config.arbPath = arbFolder;
+    config.arbPrefix = arbPrefix;
+    config.translateArbDescriptions = translateArbDescriptions;
+  }
+
+  if (phpVariables) {
+    config.phpVariables = true;
+  } else {
+    delete (config as unknown as Record<string, unknown>).phpVariables;
+  }
+
+  if (toneInput) config.tone = toneInput;
+
+  if (doNotTranslate.length || preferredTranslations) {
+    config.glossary = {};
+    if (doNotTranslate.length) config.glossary.doNotTranslate = doNotTranslate;
+    if (preferredTranslations) config.glossary.preferredTranslations = preferredTranslations;
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+
+  console.log(chalk.green(`\nConfiguration saved to ${configPath}`));
+
+  // Print a summary of what was configured
+  console.log(chalk.gray(`  Source:  ${config.sourceLanguage}`));
+  console.log(chalk.gray(`  Targets: ${config.targetLanguages.join(', ')}`));
+  console.log(chalk.gray(`  JSON:    ${config.localesPath}`));
+  if (config.markdownPath) {
+    console.log(chalk.gray(`  Markdown: ${config.markdownPath}/${config.sourceLanguage}/*.md`));
+  }
+  if (config.arbPath) {
+    console.log(chalk.gray(`  ARB:      ${config.arbPath}/${config.arbPrefix}_${config.sourceLanguage}.arb`));
+  }
+  if (config.phpVariables) {
+    console.log(chalk.gray(`  PHP variables: enabled (:name, :count, etc. are protected)`));
+  }
+  if (config.tone) {
+    console.log(chalk.gray(`  Tone:    ${config.tone.slice(0, 60)}${config.tone.length > 60 ? '...' : ''}`));
+  }
+  if (config.glossary?.doNotTranslate?.length) {
+    console.log(chalk.gray(`  No-translate: ${config.glossary.doNotTranslate.join(', ')}`));
+  }
+
+  console.log(
+    chalk.bold('\nRun ' + chalk.cyan('polycli run --key <YOUR_API_KEY>') + ' to sync translations.')
+  );
+}

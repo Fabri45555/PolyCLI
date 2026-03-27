@@ -1,0 +1,23 @@
+{
+  "name": "@polycli/cli",
+  "version": "1.3.0",
+  "description": "CLI for translating locale files with Polycli",
+  "license": "MIT",
+  "bin": {
+    "polycli": "dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^14.0.3",
+    "ora": "^8.2.0"
+  }
+}
