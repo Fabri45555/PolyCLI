@@ -13,6 +13,8 @@ interface BuildTranslatorConfig {
   translateArbDescriptions?: boolean;
   tone?: string;
   phpVariables?: boolean;
+  glossarySync?: boolean;
+  teamId?: string;
   glossary?: {
     doNotTranslate?: string[];
     preferredTranslations?: Record<string, string | Record<string, string>>;
@@ -175,6 +177,29 @@ export async function initCommand() {
     console.log(chalk.yellow('  Skipping preferredTranslations after 3 failed attempts.'));
   }
 
+  // ── Cloud Glossary Sync prompt ─────────────────────────────────────────────
+  const defaultGlossarySync = existingConfig.glossarySync ?? false;
+  const defaultTeamId = existingConfig.teamId ?? '';
+  const glossarySyncHint = defaultGlossarySync ? '(Y/n)' : '(y/N)';
+  const glossarySyncRaw = await question(
+    `\nEnable cloud glossary sync? Fetches shared team glossary before translating. ${glossarySyncHint}: `
+  );
+  const glossarySyncInput = glossarySyncRaw.trim().toLowerCase();
+  const glossarySync = glossarySyncInput === ''
+    ? defaultGlossarySync
+    : glossarySyncInput === 'y';
+
+  let teamId = defaultTeamId;
+  if (glossarySync) {
+    const teamIdRaw = await question(
+      `Team ID (UUID from your PolyCLI dashboard)${defaultTeamId ? ` [current: ${defaultTeamId}]` : ''}: `
+    );
+    teamId = teamIdRaw.trim() || defaultTeamId;
+    if (!teamId) {
+      console.log(chalk.yellow('  No team ID provided — glossary sync will be disabled.'));
+    }
+  }
+
   rl.close();
 
   // ── Build config ──────────────────────────────────────────────────────────
@@ -214,6 +239,14 @@ export async function initCommand() {
     if (preferredTranslations) config.glossary.preferredTranslations = preferredTranslations;
   }
 
+  if (glossarySync && teamId) {
+    config.glossarySync = true;
+    config.teamId = teamId;
+  } else {
+    delete (config as unknown as Record<string, unknown>).glossarySync;
+    delete (config as unknown as Record<string, unknown>).teamId;
+  }
+
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 
   console.log(chalk.green(`\nConfiguration saved to ${configPath}`));
@@ -236,6 +269,9 @@ export async function initCommand() {
   }
   if (config.glossary?.doNotTranslate?.length) {
     console.log(chalk.gray(`  No-translate: ${config.glossary.doNotTranslate.join(', ')}`));
+  }
+  if (config.glossarySync && config.teamId) {
+    console.log(chalk.gray(`  Cloud sync:  enabled (team: ${config.teamId})`));
   }
 
   console.log(

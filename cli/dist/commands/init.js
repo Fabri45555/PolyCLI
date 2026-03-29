@@ -124,6 +124,23 @@ async function initCommand() {
     if (retries === 3) {
         console.log(chalk_1.default.yellow('  Skipping preferredTranslations after 3 failed attempts.'));
     }
+    // ── Cloud Glossary Sync prompt ─────────────────────────────────────────────
+    const defaultGlossarySync = existingConfig.glossarySync ?? false;
+    const defaultTeamId = existingConfig.teamId ?? '';
+    const glossarySyncHint = defaultGlossarySync ? '(Y/n)' : '(y/N)';
+    const glossarySyncRaw = await question(`\nEnable cloud glossary sync? Fetches shared team glossary before translating. ${glossarySyncHint}: `);
+    const glossarySyncInput = glossarySyncRaw.trim().toLowerCase();
+    const glossarySync = glossarySyncInput === ''
+        ? defaultGlossarySync
+        : glossarySyncInput === 'y';
+    let teamId = defaultTeamId;
+    if (glossarySync) {
+        const teamIdRaw = await question(`Team ID (UUID from your PolyCLI dashboard)${defaultTeamId ? ` [current: ${defaultTeamId}]` : ''}: `);
+        teamId = teamIdRaw.trim() || defaultTeamId;
+        if (!teamId) {
+            console.log(chalk_1.default.yellow('  No team ID provided — glossary sync will be disabled.'));
+        }
+    }
     rl.close();
     // ── Build config ──────────────────────────────────────────────────────────
     const targetLangs = targetLangsStr
@@ -159,6 +176,14 @@ async function initCommand() {
         if (preferredTranslations)
             config.glossary.preferredTranslations = preferredTranslations;
     }
+    if (glossarySync && teamId) {
+        config.glossarySync = true;
+        config.teamId = teamId;
+    }
+    else {
+        delete config.glossarySync;
+        delete config.teamId;
+    }
     fs_1.default.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
     console.log(chalk_1.default.green(`\nConfiguration saved to ${configPath}`));
     // Print a summary of what was configured
@@ -179,6 +204,9 @@ async function initCommand() {
     }
     if (config.glossary?.doNotTranslate?.length) {
         console.log(chalk_1.default.gray(`  No-translate: ${config.glossary.doNotTranslate.join(', ')}`));
+    }
+    if (config.glossarySync && config.teamId) {
+        console.log(chalk_1.default.gray(`  Cloud sync:  enabled (team: ${config.teamId})`));
     }
     console.log(chalk_1.default.bold('\nRun ' + chalk_1.default.cyan('polycli run --key <YOUR_API_KEY>') + ' to sync translations.'));
 }

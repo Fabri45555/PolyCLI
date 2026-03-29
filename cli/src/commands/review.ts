@@ -101,7 +101,13 @@ async function callReviewApi(
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export async function reviewCommand(options: { key?: string }): Promise<void> {
+export async function reviewCommand(options: {
+  key?: string
+  /** When provided, only strings whose keys appear in this delta are reviewed (JSON phase). */
+  jsonDelta?: JsonObject
+  /** When provided, only keys present in this delta are reviewed (ARB phase). */
+  arbDelta?: Record<string, string>
+}): Promise<void> {
   const apiKey = options.key ?? process.env.POLYCLI_API_KEY
   if (!apiKey) {
     console.error(
@@ -158,7 +164,10 @@ export async function reviewCommand(options: { key?: string }): Promise<void> {
         }
 
         const targetJson: JsonObject = JSON.parse(fs.readFileSync(targetFile, 'utf8')) as JsonObject
-        const sourceCandidates = collectReviewCandidates(sourceJson, REVIEW_WORD_THRESHOLD)
+        // When a delta is available (called from `run --review`), only review strings
+        // that were just translated. Standalone `polycli review` reviews all strings.
+        const reviewScope = options.jsonDelta ?? sourceJson
+        const sourceCandidates = collectReviewCandidates(reviewScope, REVIEW_WORD_THRESHOLD)
 
         if (sourceCandidates.length === 0) {
           console.log(chalk.dim(`  JSON → ${lang}: no strings exceed ${REVIEW_WORD_THRESHOLD} words — skipping.`))
@@ -262,8 +271,12 @@ export async function reviewCommand(options: { key?: string }): Promise<void> {
         }
 
         const targetArb = parseArb(fs.readFileSync(targetFile, 'utf8'))
+        // When a delta is available, restrict review to keys that were just translated.
+        const arbDeltaKeys = options.arbDelta ? new Set(Object.keys(options.arbDelta)) : null
         const candidates = Object.entries(source.translatableKeys).filter(
-          ([, v]) => countWords(v) > REVIEW_WORD_THRESHOLD
+          ([k, v]) =>
+            countWords(v) > REVIEW_WORD_THRESHOLD &&
+            (arbDeltaKeys === null || arbDeltaKeys.has(k))
         )
 
         if (candidates.length === 0) {

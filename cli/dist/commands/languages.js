@@ -37,6 +37,7 @@ const ALL_LANGUAGES = [
     { code: 'lt', name: 'Lithuanian', flag: '🇱🇹' },
     { code: 'mk', name: 'Macedonian', flag: '🇲🇰' },
     { code: 'ms', name: 'Malay', flag: '🇲🇾' },
+    { code: 'ary', name: 'Moroccan (Darija)', flag: '🇲🇦' },
     { code: 'no', name: 'Norwegian', flag: '🇳🇴' },
     { code: 'fa', name: 'Persian', flag: '🇮🇷' },
     { code: 'pl', name: 'Polish', flag: '🇵🇱' },

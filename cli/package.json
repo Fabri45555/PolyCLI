@@ -1,6 +1,6 @@
 {
   "name": "@polycli/cli",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "CLI for translating locale files with Polycli",
   "license": "MIT",
   "bin": {

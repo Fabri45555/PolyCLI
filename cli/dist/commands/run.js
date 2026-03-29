@@ -14,6 +14,78 @@ const arb_1 = require("../utils/arb");
 const preprocessing_1 = require("../utils/preprocessing");
 const review_1 = require("./review");
 const POLYCLI_API_URL = process.env.POLYCLI_API_URL || 'https://www.polycli.dev';
+async function fetchCloudGlossary(apiKey, teamId, sourceLanguage) {
+    const res = await fetch(`${POLYCLI_API_URL}/api/glossary?teamId=${encodeURIComponent(teamId)}&languageFrom=${encodeURIComponent(sourceLanguage)}`, {
+        method: 'GET',
+        headers: { 'x-api-key': apiKey },
+    });
+    if (!res.ok) {
+        let errorMsg = `Glossary sync failed: ${res.status}`;
+        try {
+            const data = await res.json();
+            if (data.error)
+                errorMsg = data.error;
+        }
+        catch { /* not JSON */ }
+        throw new Error(errorMsg);
+    }
+    const data = await res.json();
+    return data.terms ?? [];
+}
+/**
+ * Merge cloud glossary terms into the local glossary config.
+ * Cloud terms are additive: they extend local glossary.
+ *
+ * Convention:
+ * - language_to = '*' + source === target  → doNotTranslate (keep term as-is in all langs)
+ * - language_to = '*' + source !== target  → preferredTranslations with a global instruction
+ * - language_to = 'es' etc.               → preferredTranslations per-language
+ */
+function mergeCloudGlossary(localGlossary, cloudTerms) {
+    const merged = { ...localGlossary };
+    const doNotTranslate = [...(merged.doNotTranslate ?? [])];
+    const preferred = {
+        ...(merged.preferredTranslations ?? {}),
+    };
+    for (const term of cloudTerms) {
+        const isWildcard = term.language_to === '*';
+        const isSameTerm = term.source_term === term.target_term;
+        if (isWildcard && isSameTerm) {
+            // Do Not Translate — keep as-is in all languages
+            if (!doNotTranslate.includes(term.source_term)) {
+                doNotTranslate.push(term.source_term);
+            }
+        }
+        else if (isWildcard && !isSameTerm) {
+            // Global preferred translation / instruction (applies to all target languages)
+            const existing = preferred[term.source_term];
+            if (!existing) {
+                preferred[term.source_term] = term.target_term;
+            }
+            // Don't overwrite existing local preferred translation
+        }
+        else {
+            // Language-specific preferred translation
+            const existing = preferred[term.source_term];
+            if (typeof existing === 'object' && existing !== null) {
+                // Already a per-language map — add this language
+                existing[term.language_to] = term.target_term;
+            }
+            else if (typeof existing === 'string') {
+                // Convert global instruction to per-language map
+                preferred[term.source_term] = { [term.language_to]: term.target_term };
+            }
+            else {
+                preferred[term.source_term] = { [term.language_to]: term.target_term };
+            }
+        }
+    }
+    if (doNotTranslate.length)
+        merged.doNotTranslate = doNotTranslate;
+    if (Object.keys(preferred).length)
+        merged.preferredTranslations = preferred;
+    return merged;
+}
 // ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
@@ -100,13 +172,13 @@ async function callAnalyzeApi(apiKey, delta, sourceLang, type) {
 // ---------------------------------------------------------------------------
 async function runJsonTranslation(config, apiKey, spinner, translationContext) {
     if (!config.localesPath)
-        return;
+        return null;
     const localesPath = path_1.default.resolve(process.cwd(), config.localesPath);
     const sourceFile = path_1.default.join(localesPath, `${config.sourceLanguage}.json`);
     const lockFile = path_1.default.join(localesPath, '.translator-lock.json');
     if (!fs_1.default.existsSync(sourceFile)) {
         spinner.info(`JSON: source file not found at ${sourceFile} — skipping.`);
-        return;
+        return null;
     }
     let currentSource;
     try {
@@ -133,7 +205,7 @@ async function runJsonTranslation(config, apiKey, spinner, translationContext) {
     const newLanguages = config.targetLanguages.filter((lang) => !fs_1.default.existsSync(path_1.default.join(localesPath, `${lang}.json`)));
     if (wordsInDelta === 0 && newLanguages.length === 0) {
         spinner.succeed('JSON: no new strings to translate.');
-        return;
+        return null;
     }
     if (wordsInDelta > 0 && newLanguages.length > 0) {
         spinner.succeed(`JSON: ~${wordsInDelta} changed word(s) for ${config.targetLanguages.length - newLanguages.length} language(s) + full source for ${newLanguages.length} new language(s): ${newLanguages.join(', ')}.`);
@@ -184,6 +256,10 @@ async function runJsonTranslation(config, apiKey, spinner, translationContext) {
         }
     }
     fs_1.default.writeFileSync(lockFile, JSON.stringify(currentSource, null, 2), 'utf8');
+    // Return the delta that was actually translated so the review phase can scope itself.
+    // New languages received the full source, so return currentSource for them;
+    // otherwise return only the changed keys.
+    return newLanguages.length > 0 ? currentSource : delta;
 }
 // ---------------------------------------------------------------------------
 // Markdown translation phase
@@ -291,6 +367,7 @@ async function runArbTranslation(config, apiKey, spinner, translationContext) {
     if (!fs_1.default.existsSync(sourceFile)) {
         spinner.fail(`ARB source file not found: ${sourceFile}`);
         process.exit(1);
+        return null;
     }
     let source;
     try {
@@ -314,7 +391,7 @@ async function runArbTranslation(config, apiKey, spinner, translationContext) {
     const newLanguages = config.targetLanguages.filter((lang) => !fs_1.default.existsSync(path_1.default.join(arbPath, `${prefix}_${lang}.arb`)));
     if (wordsInDelta === 0 && newLanguages.length === 0) {
         spinner.succeed('ARB: no new strings to translate.');
-        return;
+        return null;
     }
     if (wordsInDelta > 0 && newLanguages.length > 0) {
         spinner.succeed(`ARB: ~${wordsInDelta} changed word(s) for ${config.targetLanguages.length - newLanguages.length} language(s) + full source for ${newLanguages.length} new language(s): ${newLanguages.join(', ')}.`);
@@ -375,6 +452,8 @@ async function runArbTranslation(config, apiKey, spinner, translationContext) {
         }
     }
     fs_1.default.writeFileSync(lockFile, JSON.stringify(source.translatableKeys, null, 2), 'utf8');
+    // Return the ARB delta that was translated (or full source for new languages).
+    return newLanguages.length > 0 ? source.translatableKeys : delta;
 }
 // ---------------------------------------------------------------------------
 // Entry point
@@ -410,6 +489,24 @@ async function runCommand(options) {
         process.exit(1);
     }
     spinner.succeed('Configuration loaded.');
+    // ── Cloud Glossary Sync ──────────────────────────────────────────────────
+    if (config.glossarySync && config.teamId) {
+        try {
+            spinner.start('Syncing cloud glossary...');
+            const cloudTerms = await fetchCloudGlossary(apiKey, config.teamId, config.sourceLanguage);
+            if (cloudTerms.length > 0) {
+                config.glossary = mergeCloudGlossary(config.glossary, cloudTerms);
+                spinner.succeed(`Cloud glossary synced: ${cloudTerms.length} term(s) merged.`);
+            }
+            else {
+                spinner.info('Cloud glossary: no terms found for this team/language.');
+            }
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            spinner.warn(`Cloud glossary sync failed: ${message} — continuing with local glossary.`);
+        }
+    }
     // Validate tone length
     if (config.tone && config.tone.length > 200) {
         console.error(`Error: "tone" in buildtranslator.json exceeds 200 characters (found ${config.tone.length}). Please shorten it and re-run.`);
@@ -453,20 +550,21 @@ async function runCommand(options) {
         spinner.warn('Context analysis failed — proceeding without context.');
     }
     // ── Phase 1: JSON files ──────────────────────────────────────────────────
-    await runJsonTranslation(config, apiKey, spinner, translationContext);
+    const jsonDelta = await runJsonTranslation(config, apiKey, spinner, translationContext);
     // ── Phase 2: Markdown files (optional) ──────────────────────────────────
     if (config.markdownPath) {
         await runMarkdownTranslation(config, apiKey, spinner, translationContext);
     }
     // ── Phase 3: Flutter ARB files (optional) ────────────────────────────────
+    let arbDelta = null;
     if (config.arbPath) {
-        await runArbTranslation(config, apiKey, spinner, translationContext);
+        arbDelta = await runArbTranslation(config, apiKey, spinner, translationContext);
     }
     console.log(chalk_1.default.bold.green('\nAll translations completed successfully.'));
     // ── Phase 4: AI Review (optional) ─────────────────────────────────────────
     const shouldReview = options.review || config.aiReviewer;
     if (shouldReview) {
         console.log(chalk_1.default.cyan('\nStarting AI Review phase...'));
-        await (0, review_1.reviewCommand)({ key: apiKey });
+        await (0, review_1.reviewCommand)({ key: apiKey, jsonDelta: jsonDelta ?? undefined, arbDelta: arbDelta ?? undefined });
     }
 }

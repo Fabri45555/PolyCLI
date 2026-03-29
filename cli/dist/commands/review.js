@@ -112,7 +112,10 @@ async function reviewCommand(options) {
                     continue;
                 }
                 const targetJson = JSON.parse(fs_1.default.readFileSync(targetFile, 'utf8'));
-                const sourceCandidates = collectReviewCandidates(sourceJson, REVIEW_WORD_THRESHOLD);
+                // When a delta is available (called from `run --review`), only review strings
+                // that were just translated. Standalone `polycli review` reviews all strings.
+                const reviewScope = options.jsonDelta ?? sourceJson;
+                const sourceCandidates = collectReviewCandidates(reviewScope, REVIEW_WORD_THRESHOLD);
                 if (sourceCandidates.length === 0) {
                     console.log(chalk_1.default.dim(`  JSON → ${lang}: no strings exceed ${REVIEW_WORD_THRESHOLD} words — skipping.`));
                     continue;
@@ -199,7 +202,10 @@ async function reviewCommand(options) {
                     continue;
                 }
                 const targetArb = (0, arb_1.parseArb)(fs_1.default.readFileSync(targetFile, 'utf8'));
-                const candidates = Object.entries(source.translatableKeys).filter(([, v]) => countWords(v) > REVIEW_WORD_THRESHOLD);
+                // When a delta is available, restrict review to keys that were just translated.
+                const arbDeltaKeys = options.arbDelta ? new Set(Object.keys(options.arbDelta)) : null;
+                const candidates = Object.entries(source.translatableKeys).filter(([k, v]) => countWords(v) > REVIEW_WORD_THRESHOLD &&
+                    (arbDeltaKeys === null || arbDeltaKeys.has(k)));
                 if (candidates.length === 0) {
                     console.log(chalk_1.default.dim(`  ARB → ${lang}: no strings exceed ${REVIEW_WORD_THRESHOLD} words — skipping.`));
                     continue;
